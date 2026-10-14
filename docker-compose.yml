@@ -11,7 +11,7 @@ services:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - MINIOC_API_KEY=${MINIOC_API_KEY}
       - MINIOC_BASE_URL=${MINIOC_BASE_URL:-https://api.minimax.io/anthropic}
-      - MINIOC_MODEL=${MINIOC_MODEL:-MiniMax-M2.5}
+      - MINIOC_MODEL=${MINIOC_MODEL:-MiniMax-M3}
     volumes:
       - ./data:/app/data
     restart: unless-stopped

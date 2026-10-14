@@ -26,7 +26,7 @@
 - [x] `TELEGRAM_BOT_TOKEN` 正确传递到容器
 - [x] `MINIOC_API_KEY` 正确传递到容器
 - [x] `MINIOC_BASE_URL` 正确传递到容器 (https://api.minimax.io/anthropic)
-- [x] `MINIOC_MODEL` 正确传递到容器 (opencode/minimax-m2.5-free)
+- [x] `MINIOC_MODEL` 正确传递到容器 (opencode/minimax-m3)
 
 ### 网络与存储
 - [x] `network_mode: host` 正常工作

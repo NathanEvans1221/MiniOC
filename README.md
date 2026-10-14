@@ -28,8 +28,8 @@ npm install
 TELEGRAM_BOT_TOKEN=你的機器人Token
 MINIOC_API_KEY=你的API金鑰
 MINIOC_BASE_URL=https://api.minimax.io
-MINIOC_MODEL=MiniMax-M2.5
-# 或使用免費模型：opencode/minimax-m2.5-free
+MINIOC_MODEL=MiniMax-M3
+# 或使用模型：opencode/minimax-m3
 ```
 
 ### 3. 🏁 啟動機器人
@@ -49,13 +49,11 @@ npm start      # 生產模式
 | `TELEGRAM_BOT_TOKEN` | Telegram Bot Token | - |
 | `MINIOC_API_KEY` | MiniMax API 金鑰 | - |
 | `MINIOC_BASE_URL` | API 端點 | `https://api.minimax.io` |
-| `MINIOC_MODEL` | 模型名稱 | `MiniMax-M2.5` |
+| `MINIOC_MODEL` | 模型名稱 | `MiniMax-M3` |
 
 **🌟 可用模型建議**：
-- `MiniMax-M2.5` - 穩定付費版（需 API Key）
-- `MiniMax-M2.5-highspeed` - 極速回應版
-- `MiniMax-M2.1` - 經典付費版
-- `opencode/minimax-m2.5-free` - 體驗首選（透過 OpenCode 免費提供）
+- `MiniMax-M3` - 穩定付費版（需 API Key）
+- `opencode/minimax-m3` - 體驗首選（透過 OpenCode 提供）
 
 ### 🛠️ Docker 指令
 

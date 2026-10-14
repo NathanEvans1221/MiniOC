@@ -8,7 +8,7 @@ function buildPrompt(userId, message, history) {
 
 async function callMiniMaxAPI(apiKey, baseURL, model, prompt) {
     return new Promise((resolve, reject) => {
-        const url = new URL('/v1/text/chatcompletion', baseURL);
+        const url = new URL('/v1/text/chatcompletion_v2', baseURL);
 
         const postData = JSON.stringify({
             model: model,
@@ -37,8 +37,9 @@ async function callMiniMaxAPI(apiKey, baseURL, model, prompt) {
                         reject(new Error(`MiniMax API error: ${result.base_resp.status_msg}`));
                         return;
                     }
-                    if (result.reply) {
-                        resolve(result.reply);
+                    const answer = result.choices?.[0]?.message?.content || result.reply;
+                    if (answer) {
+                        resolve(answer);
                     } else {
                         resolve(data);
                     }
@@ -140,7 +141,7 @@ async function processMessage(userId, message, history) {
     const prompt = buildPrompt(userId, message, history);
     const apiKey = process.env.MINIOC_API_KEY;
     const baseURL = process.env.MINIOC_BASE_URL || 'https://api.minimax.io';
-    const model = process.env.MINIOC_MODEL || 'MiniMax-M2.5';
+    const model = process.env.MINIOC_MODEL || 'MiniMax-M3';
 
     if (!apiKey) {
         throw new Error('MINIOC_API_KEY is not set in .env');
