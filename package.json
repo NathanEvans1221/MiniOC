@@ -7,7 +7,6 @@
     "start": "node --dns-result-order=ipv4first src/index.js",
     "dev": "node --watch --dns-result-order=ipv4first src/index.js",
     "chat": "node src/chat.js",
-    "chat:local": "bash chat-local.sh",
     "test": "npx jest --silent --forceExit",
     "test:watch": "npx jest --watch --silent"
   },
@@ -15,7 +14,7 @@
     "telegram",
     "bot",
     "ai",
-    "opencode"
+    "minimax"
   ],
   "author": "",
   "license": "MIT",
