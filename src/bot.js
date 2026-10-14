@@ -201,46 +201,62 @@ async function initBot() {
         }
     });
 
+    let isRecovering409 = false;
+    let last409NoticeTime = 0;
+
     bot.on('polling_error', async (error) => {
         const is409 = error.code === 409 ||
             (error.response && error.response.body && error.response.body.error_code === 409);
 
         if (is409) {
-            logger.error('409 Conflict detected - Telegram polling conflict', error);
-            logger.warn('Possible causes: multiple bot instances running or previous session not properly closed');
-            logger.warn('Solution: Waiting for Telegram to release lock (usually takes 30 minutes max)');
+            if (isRecovering409) return;
+            isRecovering409 = true;
 
-            for (let attempt = 1; attempt <= 3; attempt++) {
-                try {
-                    logger.info(`Recovery attempt ${attempt}/3...`);
-                    await bot.stopPolling();
-                    await bot.deleteWebHook();
+            const now = Date.now();
+            if (now - last409NoticeTime > 20000) {
+                last409NoticeTime = now;
+                console.log('\n' + '='.repeat(62));
+                logger.warn('⚠️  檢測到 Telegram 409 Conflict（連線衝突）！');
+                logger.warn('--------------------------------------------------------------');
+                logger.warn('【可能原因】');
+                logger.warn('有其他實例正使用同一個 TELEGRAM_BOT_TOKEN 連線 Telegram：');
+                logger.warn(' 1. Docker / WSL 容器在背景執行中（如 WSL 中的 minioc 容器）。');
+                logger.warn(' 2. 其他終端機視窗、伺服器或本機背景行程正在執行此 Bot。');
+                logger.warn(' 3. 前次非正常關閉，Telegram 伺服器端連線尚未超時釋放。');
+                logger.warn('');
+                logger.warn('【建議排查步驟】');
+                logger.warn(' 1. 檢查是否有其他容器在跑：');
+                logger.warn('    - Windows: docker ps');
+                logger.warn('    - WSL:     wsl docker ps (停止指令: wsl docker stop <名稱>)');
+                logger.warn(' 2. 檢查其他終端機或背景 node 行程並關閉。');
+                logger.warn(' 3. 或向 Telegram 機器人發送 /reset 重置連線。');
+                logger.warn('='.repeat(62) + '\n');
+            }
 
-                    await new Promise(r => setTimeout(r, 3000));
-
+            try {
+                for (let attempt = 1; attempt <= 3; attempt++) {
+                    logger.info(`正在嘗試自動復原連線 (${attempt}/3)...`);
                     try {
-                        const updates = await bot.getUpdates({ limit: 100, timeout: 30 });
-                        if (updates && updates.length > 0) {
-                            const lastUpdateId = updates[updates.length - 1].update_id;
-                            await bot.getUpdates({ offset: lastUpdateId + 1, limit: 1 });
-                            logger.info(`Cleared ${updates.length} updates during recovery`);
-                        }
-                    } catch (e) {
-                        logger.warn(`Failed to clear updates on attempt ${attempt}`, e);
-                    }
+                        await bot.stopPolling();
+                        await bot.deleteWebHook({ drop_pending_updates: true });
 
-                    await bot.startPolling();
-                    logger.success('Polling restarted successfully after 409 recovery');
-                    return;
-                } catch (err) {
-                    logger.warn(`Recovery attempt ${attempt} failed`, err);
-                    if (attempt < 3) {
-                        await new Promise(r => setTimeout(r, 5000));
+                        await new Promise(r => setTimeout(r, 2000 * attempt));
+
+                        await bot.startPolling();
+                        logger.success('✅ 409 連線衝突已成功復原，Polling 重新啟動！');
+                        return;
+                    } catch (err) {
+                        logger.warn(`自動復原第 ${attempt} 次失敗: ${err.message}`);
+                        if (attempt < 3) {
+                            await new Promise(r => setTimeout(r, 3000));
+                        }
                     }
                 }
+                logger.error('❌ 3 次自動復原皆失敗，外部可能仍有其他實例持續佔用連線。');
+                logger.error('請先關閉其他衝突實例後重啟本程式。');
+            } finally {
+                isRecovering409 = false;
             }
-            logger.error('All 409 recovery attempts failed');
-            logger.error('User should wait 30 minutes or restart the bot');
             return;
         }
 
