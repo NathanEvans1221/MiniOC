@@ -1,47 +1,31 @@
 require('dotenv').config();
-const fs = require('fs');
 const path = require('path');
 const logger = require('./logger');
-const { initBot } = require('./bot');
+const { acquireLock, releaseLock } = require('./lockfile');
+const { initBot, stopBot } = require('./bot');
 const { initDatabase, clearAllConversations, closeDatabase } = require('./db');
 
 const LOCK_FILE = path.join(process.cwd(), 'data', 'bot.lock');
 
-function acquireLock() {
-    try {
-        if (fs.existsSync(LOCK_FILE)) {
-            const pid = fs.readFileSync(LOCK_FILE, 'utf8').trim();
-            logger.warn(`Found existing lock file, PID: ${pid}`);
-            
-            try {
-                process.kill(parseInt(pid), 'SIGKILL');
-                logger.info(`Killed old process: ${pid}`);
-            } catch (e) {
-                logger.warn(`Could not kill process ${pid}: ${e.message}`);
-            }
-            
-            fs.unlinkSync(LOCK_FILE);
-        }
-        
-        fs.writeFileSync(LOCK_FILE, process.pid.toString());
-        logger.info(`Lock acquired, PID: ${process.pid}`);
-        return true;
-    } catch (e) {
-        logger.error('Failed to acquire lock', e);
-        logger.error('Possible causes: data folder is read-only or locked by another process');
-        return false;
-    }
-}
+let shuttingDown = false;
 
-function releaseLock() {
-    try {
-        if (fs.existsSync(LOCK_FILE)) {
-            fs.unlinkSync(LOCK_FILE);
-            logger.info('Lock released');
-        }
-    } catch (e) {
-        logger.error('Failed to release lock', e);
+/**
+ * 唯一的關閉流程：停止 polling → 關閉資料庫 → 釋放鎖檔。
+ * 順序固定，避免在資料庫已關閉後仍有訊息處理正在寫入。
+ */
+async function shutdown(signal) {
+    if (shuttingDown) {
+        return;
     }
+    shuttingDown = true;
+
+    logger.info(`${signal} received, shutting down...`);
+
+    await stopBot();
+    closeDatabase();
+    releaseLock(LOCK_FILE);
+
+    process.exit(0);
 }
 
 async function main() {
@@ -49,24 +33,25 @@ async function main() {
     logger.info('Starting Telegram AI Agent...');
     logger.info('========================================');
     
-    if (!acquireLock()) {
+    if (!acquireLock(LOCK_FILE)) {
         logger.error('Could not acquire lock, exiting');
         process.exit(1);
     }
     
     process.on('exit', () => {
-        releaseLock();
-        closeDatabase();
+        releaseLock(LOCK_FILE);
     });
     process.on('SIGINT', () => {
-        logger.info('SIGINT received, shutting down...');
-        releaseLock();
-        closeDatabase();
+        shutdown('SIGINT').catch((e) => {
+            logger.error('Shutdown failed', e);
+            process.exit(1);
+        });
     });
     process.on('SIGTERM', () => {
-        logger.info('SIGTERM received, shutting down...');
-        releaseLock();
-        closeDatabase();
+        shutdown('SIGTERM').catch((e) => {
+            logger.error('Shutdown failed', e);
+            process.exit(1);
+        });
     });
 
     try {
@@ -75,21 +60,25 @@ async function main() {
         logger.error('Failed to initialize database', error);
         logger.error('Possible causes: SQLite not installed, data folder permission issue, or disk full');
         logger.error('Solution: Check data folder permissions and reinstall dependencies');
-        releaseLock();
+        releaseLock(LOCK_FILE);
         process.exit(1);
     }
 
-    try {
-        clearAllConversations();
-    } catch (error) {
-        logger.error('Failed to clear conversations', error);
+    // 預設保留既有對話；僅在明確設定時才清空
+    if (process.env.CLEAR_HISTORY_ON_START === 'true') {
+        logger.warn('CLEAR_HISTORY_ON_START=true，正在清空所有既有對話');
+        try {
+            clearAllConversations();
+        } catch (error) {
+            logger.error('Failed to clear conversations', error);
+        }
     }
 
     try {
         await initBot();
     } catch (error) {
         logger.error('Failed to initialize bot', error);
-        releaseLock();
+        releaseLock(LOCK_FILE);
         closeDatabase();
         process.exit(1);
     }

@@ -52,6 +52,20 @@ describe('db.js - Database Operations', () => {
         expect(history.length).toBe(1);
     });
 
+    test('getChatHistory should return the most recent messages, oldest first', () => {
+        const userId = 777;
+        for (let i = 1; i <= 25; i++) {
+            dbModule.addMessage(userId, 'user', `msg-${i}`);
+        }
+
+        const history = dbModule.getChatHistory(userId, 20);
+
+        expect(history.length).toBe(20);
+        // 應為第 6~25 筆（最近 20 筆），而非第 1~20 筆
+        expect(history[0].content).toBe('msg-6');
+        expect(history[history.length - 1].content).toBe('msg-25');
+    });
+
     test('clearChatHistory should delete user messages', () => {
         dbModule.clearChatHistory(123);
         const history = dbModule.getChatHistory(123);
@@ -77,5 +91,11 @@ describe('db.js - Database Operations', () => {
 
     test('closeDatabase should handle error when database is already closed', () => {
         expect(() => dbModule.closeDatabase()).not.toThrow();
+    });
+
+    test('operations on a closed database should fail with a clear message', () => {
+        expect(() => dbModule.addMessage(1, 'user', 'x')).toThrow('Database is not initialized or already closed');
+        expect(() => dbModule.getChatHistory(1)).toThrow('Database is not initialized or already closed');
+        expect(() => dbModule.clearAllConversations()).toThrow('Database is not initialized or already closed');
     });
 });

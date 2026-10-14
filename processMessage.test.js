@@ -1,8 +1,10 @@
 const https = require('https');
+const http = require('http');
 const { EventEmitter } = require('events');
-const { processMessage, buildPrompt, callMiniMaxAPI } = require('./src/ai');
+const { processMessage } = require('./src/ai');
 
 jest.mock('https');
+jest.mock('http');
 
 describe('ai.js - processMessage with MiniMax API', () => {
     beforeEach(() => {
@@ -12,13 +14,13 @@ describe('ai.js - processMessage with MiniMax API', () => {
         process.env.MINIOC_MODEL = 'MiniMax-M3';
     });
 
-    function createMockRequest(statusCode, responseBody, triggerError = null) {
+    function createMockRequest(transport, statusCode, responseBody, triggerError = null) {
         const req = new EventEmitter();
         req.write = jest.fn();
         req.end = jest.fn();
         req.destroy = jest.fn();
 
-        https.request.mockImplementation((options, callback) => {
+        transport.request.mockImplementation((options, callback) => {
             if (triggerError) {
                 process.nextTick(() => req.emit('error', triggerError));
                 return req;
@@ -49,7 +51,7 @@ describe('ai.js - processMessage with MiniMax API', () => {
             base_resp: { status_code: 0 }
         };
 
-        createMockRequest(200, responseData);
+        createMockRequest(https, 200, responseData);
 
         const result = await processMessage(123, '你好', []);
         expect(result).toBe('你好！我是 MiniMax AI。');
@@ -61,13 +63,76 @@ describe('ai.js - processMessage with MiniMax API', () => {
         expect(callArgs.headers['Authorization']).toBe('Bearer test-key');
     });
 
+    test('processMessage should send conversation history to the model', async () => {
+        const responseData = {
+            choices: [{ message: { content: '你叫 CS' } }],
+            base_resp: { status_code: 0 }
+        };
+
+        const req = createMockRequest(https, 200, responseData);
+        const history = [
+            { role: 'user', content: '我的名字是 CS' },
+            { role: 'assistant', content: '你好 CS' }
+        ];
+
+        await processMessage(123, '我叫什麼名字？', history);
+
+        const body = JSON.parse(req.write.mock.calls[0][0]);
+        expect(body.messages).toEqual([
+            { role: 'user', content: '我的名字是 CS' },
+            { role: 'assistant', content: '你好 CS' },
+            { role: 'user', content: '我叫什麼名字？' }
+        ]);
+        expect(body.model).toBe('MiniMax-M3');
+    });
+
+    test('processMessage should honour a custom port in MINIOC_BASE_URL', async () => {
+        process.env.MINIOC_BASE_URL = 'https://proxy.example.com:8443/minimax';
+
+        createMockRequest(https, 200, { reply: 'ok', base_resp: { status_code: 0 } });
+
+        await processMessage(123, '測試', []);
+
+        const callArgs = https.request.mock.calls[0][0];
+        expect(callArgs.hostname).toBe('proxy.example.com');
+        expect(callArgs.port).toBe('8443');
+        expect(callArgs.path).toBe('/minimax/v1/text/chatcompletion_v2');
+    });
+
+    test('processMessage should use the http module for http endpoints', async () => {
+        process.env.MINIOC_BASE_URL = 'http://127.0.0.1:8080';
+
+        createMockRequest(http, 200, { reply: 'local mock', base_resp: { status_code: 0 } });
+
+        const result = await processMessage(123, '測試', []);
+
+        expect(result).toBe('local mock');
+        expect(http.request).toHaveBeenCalledTimes(1);
+        expect(https.request).not.toHaveBeenCalled();
+    });
+
+    test('processMessage should omit port for default endpoints', async () => {
+        createMockRequest(https, 200, { reply: 'ok', base_resp: { status_code: 0 } });
+
+        await processMessage(123, '測試', []);
+
+        const callArgs = https.request.mock.calls[0][0];
+        expect(callArgs.port).toBeUndefined();
+    });
+
+    test('processMessage should reject on invalid MINIOC_BASE_URL', async () => {
+        process.env.MINIOC_BASE_URL = 'not a url';
+
+        await expect(processMessage(123, '測試', [])).rejects.toThrow('Invalid MINIOC_BASE_URL');
+    });
+
     test('processMessage should fallback to reply if choices is missing', async () => {
         const responseData = {
             reply: '這是回覆文字',
             base_resp: { status_code: 0 }
         };
 
-        createMockRequest(200, responseData);
+        createMockRequest(https, 200, responseData);
 
         const result = await processMessage(123, '測試', []);
         expect(result).toBe('這是回覆文字');
@@ -78,7 +143,7 @@ describe('ai.js - processMessage with MiniMax API', () => {
             base_resp: { status_code: 1002, status_msg: 'rate limit exceeded' }
         };
 
-        createMockRequest(200, responseData);
+        createMockRequest(https, 200, responseData);
 
         await expect(processMessage(123, '測試', [])).rejects.toThrow('MiniMax API error: rate limit exceeded');
     });
@@ -90,7 +155,7 @@ describe('ai.js - processMessage with MiniMax API', () => {
     });
 
     test('processMessage should reject on network error', async () => {
-        createMockRequest(500, null, new Error('Network connection error'));
+        createMockRequest(https, 500, null, new Error('Network connection error'));
 
         await expect(processMessage(123, '測試', [])).rejects.toThrow('Network connection error');
     });

@@ -1,9 +1,90 @@
 const TelegramBot = require('node-telegram-bot-api');
 const { processMessage } = require('./ai');
 const { getChatHistory, addMessage } = require('./db');
+const { createRateLimiter, createSerialQueue } = require('./ratelimit');
 const logger = require('./logger');
 
+// Telegram 單則訊息上限
+const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
+const DEFAULT_MAX_MESSAGE_LENGTH = 4000;
+const DEFAULT_RATE_LIMIT_WINDOW_MS = 60000;
+const DEFAULT_RATE_LIMIT_MAX_REQUESTS = 10;
+
+const ANSI_PATTERN = /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g;
+
 let bot;
+let stopping = false;
+
+function readPositiveInt(value, fallback) {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function stripAnsi(text) {
+    return text.replace(ANSI_PATTERN, '').trim();
+}
+
+/**
+ * 依 Telegram 的長度上限切分訊息，優先於換行處斷開，避免整則回覆送不出去。
+ * 切分的結果不遺失任何字元（最後一個換行會保留在該區塊結尾）。
+ */
+function splitMessage(text, maxLength = TELEGRAM_MAX_MESSAGE_LENGTH) {
+    if (text.length <= maxLength) {
+        return [text];
+    }
+
+    const chunks = [];
+    let rest = text;
+
+    while (rest.length > maxLength) {
+        // 在上限之內尋找最後一個換行；找不到時才硬切
+        const cut = rest.lastIndexOf('\n', maxLength - 1);
+        const end = cut > 0 ? cut + 1 : maxLength;
+
+        chunks.push(rest.slice(0, end));
+        rest = rest.slice(end);
+    }
+
+    if (rest.length > 0) {
+        chunks.push(rest);
+    }
+
+    return chunks;
+}
+
+function isParseEntitiesError(error) {
+    const description = error?.response?.body?.description || error?.message || '';
+    return /can't parse entities|can't find end of|parse_mode/i.test(description);
+}
+
+/**
+ * 送出提示訊息（非模型回覆）。失敗只記錄日誌，不讓例外冒出事件處理器。
+ */
+async function safeNotify(chatId, text) {
+    try {
+        await bot.sendMessage(chatId, text);
+    } catch (error) {
+        logger.error(`Failed to send notice to chat ${chatId}`, error);
+    }
+}
+
+/**
+ * 送出回覆。模型輸出未經轉義，可能含不成對的 Markdown 字元而被 Telegram 拒絕，
+ * 此時退回純文字重送一次，確保內容仍能送達使用者。
+ */
+async function sendReply(chatId, text) {
+    for (const chunk of splitMessage(text)) {
+        try {
+            await bot.sendMessage(chatId, chunk, { parse_mode: 'Markdown' });
+        } catch (error) {
+            if (!isParseEntitiesError(error)) {
+                throw error;
+            }
+            logger.warn('Telegram 無法解析 Markdown，改以純文字重送');
+            await bot.sendMessage(chatId, chunk);
+        }
+    }
+}
 
 async function initBot() {
     const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -13,6 +94,13 @@ async function initBot() {
     }
 
     logger.info('Initializing Telegram bot...');
+
+    const maxMessageLength = readPositiveInt(process.env.MAX_MESSAGE_LENGTH, DEFAULT_MAX_MESSAGE_LENGTH);
+    const rateLimiter = createRateLimiter({
+        windowMs: readPositiveInt(process.env.RATE_LIMIT_WINDOW_MS, DEFAULT_RATE_LIMIT_WINDOW_MS),
+        maxRequests: readPositiveInt(process.env.RATE_LIMIT_MAX_REQUESTS, DEFAULT_RATE_LIMIT_MAX_REQUESTS)
+    });
+    const queue = createSerialQueue();
 
     const botOptions = {
         polling: {
@@ -125,6 +213,12 @@ async function initBot() {
 
         const chatId = msg.chat.id;
         const text = msg.text;
+
+        if (!msg.from) {
+            logger.debug('Ignoring message without a sender');
+            return;
+        }
+
         const userId = msg.from.id;
 
         if (!text) {
@@ -136,46 +230,71 @@ async function initBot() {
             return;
         }
 
+        if (text.length > maxMessageLength) {
+            logger.warn(`Rejected message from user ${userId}: ${text.length} chars exceeds limit ${maxMessageLength}`);
+            await safeNotify(chatId, `訊息長度 ${text.length} 字元超過上限（${maxMessageLength}），請縮短後再試。`);
+            return;
+        }
+
+        const limit = rateLimiter.check(userId);
+        if (!limit.allowed) {
+            const retryAfterSeconds = Math.max(1, Math.ceil(limit.retryAfterMs / 1000));
+            logger.warn(`Rate limit exceeded for user ${userId}, retry after ${retryAfterSeconds}s`);
+            await safeNotify(chatId, `請求過於頻繁，請等待 ${retryAfterSeconds} 秒後再試。`);
+            return;
+        }
+
         logger.info(`Received message from user ${userId}: ${text.substring(0, 50)}...`);
 
-        try {
-            await bot.sendChatAction(chatId, 'typing');
+        // 同一使用者的訊息依序處理，避免同時打滿 API 併發
+        await queue.run(userId, async () => {
+            try {
+                await bot.sendChatAction(chatId, 'typing');
 
-            const history = getChatHistory(userId);
+                const history = getChatHistory(userId);
 
-            const response = await processMessage(userId, text, history);
+                const response = await processMessage(userId, text, history);
 
-            const cleanResponse = response.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '').trim();
+                const cleanResponse = stripAnsi(response);
 
-            addMessage(userId, 'user', text);
-            addMessage(userId, 'assistant', cleanResponse);
+                addMessage(userId, 'user', text);
+                addMessage(userId, 'assistant', cleanResponse);
 
-            await bot.sendMessage(chatId, cleanResponse, { parse_mode: 'Markdown' });
+                await sendReply(chatId, cleanResponse);
 
-            logger.success(`Response sent to user ${userId}`);
-        } catch (error) {
-            logger.error(`Error processing message from user ${userId}`, error);
+                logger.success(`Response sent to user ${userId}`);
+            } catch (error) {
+                logger.error(`Error processing message from user ${userId}`, error);
 
-            let errorMessage = 'Sorry, something went wrong. Please try again.';
+                let errorMessage = 'Sorry, something went wrong. Please try again.';
 
-            if (error.message.includes('Authentication failed')) {
-                errorMessage = 'AI service authentication failed. Please contact the administrator.';
-                logger.error('AI authentication failed - check MINIOC_API_KEY');
-            } else if (error.message.includes('Rate limit')) {
-                errorMessage = 'Too many requests. Please wait a moment and try again.';
-                logger.warn('Rate limit exceeded');
-            } else if (error.message.includes('timed out')) {
-                errorMessage = 'AI response timed out. Please try again.';
+                if (error.message.includes('Authentication failed')) {
+                    errorMessage = 'AI service authentication failed. Please contact the administrator.';
+                    logger.error('AI authentication failed - check MINIOC_API_KEY');
+                } else if (error.message.includes('Rate limit')) {
+                    errorMessage = 'Too many requests. Please wait a moment and try again.';
+                    logger.warn('Rate limit exceeded');
+                } else if (error.message.includes('timed out')) {
+                    errorMessage = 'AI response timed out. Please try again.';
+                }
+
+                try {
+                    await bot.sendMessage(chatId, errorMessage);
+                } catch (sendError) {
+                    logger.error(`Failed to send error message to user ${userId}`, sendError);
+                }
             }
-
-            await bot.sendMessage(chatId, errorMessage);
-        }
+        });
     });
 
     let isRecovering409 = false;
     let last409NoticeTime = 0;
 
     bot.on('polling_error', async (error) => {
+        if (stopping) {
+            return;
+        }
+
         const is409 = error.code === 409 ||
             (error.response && error.response.body && error.response.body.error_code === 409);
 
@@ -206,11 +325,14 @@ async function initBot() {
 
             try {
                 for (let attempt = 1; attempt <= 3; attempt++) {
+                    if (stopping) return;
                     logger.info(`正在嘗試自動復原連線 (${attempt}/3)...`);
                     try {
                         await bot.stopPolling();
                         // 等待 11 秒（大於 polling timeout 10 秒），確保 Telegram 伺服器端連線釋放
                         await new Promise(r => setTimeout(r, 11000));
+
+                        if (stopping) return;
 
                         await bot.startPolling();
                         logger.success('✅ 409 連線衝突已成功復原，Polling 重新啟動！');
@@ -239,26 +361,29 @@ async function initBot() {
         }
     });
 
-    // Graceful shutdown
-    const gracefulShutdown = (signal) => {
-        logger.info(`Received ${signal}, stopping bot...`);
-        bot.stopPolling().then(() => {
-            logger.success('Polling stopped, exiting');
-            process.exit(0);
-        }).catch((err) => {
-            logger.error('Failed to stop polling gracefully', err);
-            process.exit(1);
-        });
-    };
-
-    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-
     return bot;
+}
+
+/**
+ * 停止 Bot。生命週期由 index.js 統一管理，此處只負責實際停止 polling。
+ */
+async function stopBot() {
+    stopping = true;
+
+    if (!bot) {
+        return;
+    }
+
+    try {
+        await bot.stopPolling();
+        logger.success('Polling stopped');
+    } catch (error) {
+        logger.error('Failed to stop polling', error);
+    }
 }
 
 function getBot() {
     return bot;
 }
 
-module.exports = { initBot, getBot };
+module.exports = { initBot, stopBot, getBot, splitMessage, stripAnsi, readPositiveInt };

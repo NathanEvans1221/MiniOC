@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+require('dotenv').config();
 const { processMessage } = require('./ai');
 
 async function main() {

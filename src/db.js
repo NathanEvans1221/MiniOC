@@ -4,6 +4,7 @@ const fs = require('fs');
 const logger = require('./logger');
 
 const DB_PATH = path.join(process.cwd(), 'data', 'conversation.db');
+const DEFAULT_HISTORY_LIMIT = 20;
 let db;
 
 function initDatabase() {
@@ -42,9 +43,20 @@ function getDatabase() {
     return db;
 }
 
+/**
+ * 取得可用連線。若資料庫尚未初始化或已關閉，給出明確錯誤，
+ * 而不是讓 better-sqlite3 拋出難以理解的內部訊息。
+ */
+function requireDatabase() {
+    if (!db || !db.open) {
+        throw new Error('Database is not initialized or already closed');
+    }
+    return db;
+}
+
 function addMessage(userId, role, content) {
     try {
-        const stmt = db.prepare('INSERT INTO conversations (user_id, role, content) VALUES (?, ?, ?)');
+        const stmt = requireDatabase().prepare('INSERT INTO conversations (user_id, role, content) VALUES (?, ?, ?)');
         const result = stmt.run(userId, role, content);
         logger.debug(`Message added: userId=${userId}, role=${role}, id=${result.lastInsertRowid}`);
     } catch (error) {
@@ -53,14 +65,23 @@ function addMessage(userId, role, content) {
     }
 }
 
-function getChatHistory(userId, limit = 20) {
+/**
+ * 取得該使用者「最近」N 筆訊息，並依時間由舊到新回傳。
+ * 先以子查詢取最新的 N 筆，再於外層反轉排序。
+ * 排序使用 id 而非 timestamp，因為 CURRENT_TIMESTAMP 僅有秒級解析度，
+ * 同一秒內的多筆訊息排序不穩定。
+ */
+function getChatHistory(userId, limit = DEFAULT_HISTORY_LIMIT) {
     try {
-        const stmt = db.prepare(`
-            SELECT role, content 
-            FROM conversations 
-            WHERE user_id = ? 
-            ORDER BY timestamp ASC 
-            LIMIT ?
+        const stmt = requireDatabase().prepare(`
+            SELECT role, content FROM (
+                SELECT id, role, content
+                FROM conversations
+                WHERE user_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+            )
+            ORDER BY id ASC
         `);
         const history = stmt.all(userId, limit);
         logger.debug(`Retrieved ${history.length} messages for user ${userId}`);
@@ -73,7 +94,7 @@ function getChatHistory(userId, limit = 20) {
 
 function clearChatHistory(userId) {
     try {
-        const stmt = db.prepare('DELETE FROM conversations WHERE user_id = ?');
+        const stmt = requireDatabase().prepare('DELETE FROM conversations WHERE user_id = ?');
         const result = stmt.run(userId);
         logger.info(`Cleared ${result.changes} messages for user ${userId}`);
     } catch (error) {
@@ -84,7 +105,7 @@ function clearChatHistory(userId) {
 
 function clearAllConversations() {
     try {
-        const stmt = db.prepare('DELETE FROM conversations');
+        const stmt = requireDatabase().prepare('DELETE FROM conversations');
         const result = stmt.run();
         logger.info(`Cleared all conversations: ${result.changes} rows deleted`);
     } catch (error) {
