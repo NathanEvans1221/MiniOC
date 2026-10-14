@@ -21,8 +21,10 @@ async function initBot() {
     const botOptions = {
         polling: {
             autoStart: false,
-            timeout: 30,
-            limit: 100
+            params: {
+                timeout: 10
+            },
+            interval: 500
         },
         request: {
             timeout: 30000,
@@ -47,37 +49,12 @@ async function initBot() {
         throw err;
     }
 
-    // 啟動 polling 前先清除可能殘留的 webhook，避免 409 衝突
+    // 啟動 polling 前清除 webhook 與積壓更新，避免 409 衝突
     try {
         await Promise.race([
-            bot.setWebHook(''),
+            bot.deleteWebHook({ drop_pending_updates: true }),
             new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 10000))
         ]);
-        await Promise.race([
-            bot.deleteWebHook(),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 10000))
-        ]);
-
-        logger.info('Waiting for Telegram to release polling lock (35s >= Long Polling timeout)...');
-        await new Promise(r => setTimeout(r, 35000));
-
-        // 嘗試獲取所有待處理的 updates 並清除
-        try {
-            const updates = await Promise.race([
-                bot.getUpdates({ limit: 100, timeout: 30 }),
-                new Promise((resolve) => setTimeout(() => resolve([]), 35000))
-            ]);
-            if (updates && updates.length > 0) {
-                const lastUpdateId = updates[updates.length - 1].update_id;
-                await bot.getUpdates({ offset: lastUpdateId + 1, limit: 1 });
-                logger.info(`Cleared ${updates.length} pending updates (last offset: ${lastUpdateId + 1})`);
-            } else {
-                logger.info('No pending updates found');
-            }
-        } catch (e) {
-            logger.warn('Failed to clear pending updates', e);
-        }
-
         logger.info('Webhook cleared, starting polling...');
     } catch (err) {
         logger.warn('Failed to reset webhook', err);
@@ -238,9 +215,8 @@ async function initBot() {
                     logger.info(`正在嘗試自動復原連線 (${attempt}/3)...`);
                     try {
                         await bot.stopPolling();
-                        await bot.deleteWebHook({ drop_pending_updates: true });
-
-                        await new Promise(r => setTimeout(r, 2000 * attempt));
+                        // 等待 11 秒（大於 polling timeout 10 秒），確保 Telegram 伺服器端連線釋放
+                        await new Promise(r => setTimeout(r, 11000));
 
                         await bot.startPolling();
                         logger.success('✅ 409 連線衝突已成功復原，Polling 重新啟動！');
