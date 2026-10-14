@@ -1,7 +1,7 @@
 {
   "name": "telegram-ai-agent",
   "version": "1.0.0",
-  "description": "Telegram AI Agent using opencode as thinking engine",
+  "description": "Telegram AI Agent powered by MiniMax API",
   "main": "src/index.js",
   "scripts": {
     "start": "node --dns-result-order=ipv4first src/index.js",

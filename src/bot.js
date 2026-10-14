@@ -2,10 +2,6 @@ const TelegramBot = require('node-telegram-bot-api');
 const { processMessage } = require('./ai');
 const { getChatHistory, addMessage } = require('./db');
 const logger = require('./logger');
-const fs = require('fs');
-
-const isDocker = fs.existsSync('/.dockerenv');
-const envPrefix = isDocker ? '🐳 [Docker]' : '💻 [Local]';
 
 let bot;
 
@@ -151,12 +147,10 @@ async function initBot() {
 
             const cleanResponse = response.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '').trim();
 
-            const finalResponse = `${envPrefix}\n\n${cleanResponse}`;
-
             addMessage(userId, 'user', text);
             addMessage(userId, 'assistant', cleanResponse);
 
-            await bot.sendMessage(chatId, finalResponse, { parse_mode: 'Markdown' });
+            await bot.sendMessage(chatId, cleanResponse, { parse_mode: 'Markdown' });
 
             logger.success(`Response sent to user ${userId}`);
         } catch (error) {

@@ -1,5 +1,4 @@
 const https = require('https');
-const { spawn } = require('child_process');
 const logger = require('./logger');
 
 function buildPrompt(userId, message, history) {
@@ -60,83 +59,6 @@ async function callMiniMaxAPI(apiKey, baseURL, model, prompt) {
     });
 }
 
-async function callOpenCode(model, prompt) {
-    return new Promise((resolve, reject) => {
-        const args = ['run', '--format', 'json'];
-
-        if (model) {
-            args.push('--model', model);
-        }
-
-        args.push('--', prompt);
-
-        const customEnv = {
-            ...process.env,
-            ANTHROPIC_BASE_URL: process.env.MINIOC_BASE_URL,
-            ANTHROPIC_AUTH_TOKEN: process.env.MINIOC_API_KEY
-        };
-
-        // Use 'sh -c' to pipe 'yes' into opencode to bypass interactive prompts automatically
-        const command = `yes | opencode ${args.map(a => `"${a.replace(/"/g, '\\"')}"`).join(' ')}`;
-        logger.debug(`Executing: ${command}`);
-
-        const child = spawn('sh', ['-c', command], { env: customEnv });
-
-        let stdout = '';
-        let stderr = '';
-        let timeoutId;
-
-        child.on('error', (error) => {
-            clearTimeout(timeoutId);
-            const errorMsg = error?.message || 'Unknown error';
-            logger.error(`Failed to spawn opencode process: ${errorMsg}`, error);
-            reject(new Error(`Failed to spawn opencode: ${errorMsg}`));
-        });
-
-        child.stdout.on('data', (data) => {
-            stdout += data.toString();
-        });
-
-        child.stderr.on('data', (data) => {
-            stderr += data.toString();
-            logger.debug(`opencode stderr: ${data.toString()}`);
-        });
-
-        child.on('close', (code) => {
-            clearTimeout(timeoutId);
-
-            if (code !== 0) {
-                logger.error(`opencode exited with code ${code}`);
-                reject(new Error(stderr || `opencode failed with exit code ${code}`));
-                return;
-            }
-
-            let cleanOutput = stdout.replace(/[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g, '').trim();
-
-            try {
-                const lines = cleanOutput.split('\n');
-                for (const line of lines) {
-                    const obj = JSON.parse(line);
-                    if (obj.type === 'text' && obj.part?.text) {
-                        cleanOutput = obj.part.text;
-                        break;
-                    }
-                }
-            } catch (e) {
-                // Not JSON, use as-is
-            }
-
-            resolve(cleanOutput);
-        });
-
-        timeoutId = setTimeout(() => {
-            child.kill();
-            logger.error('opencode timed out after 60 seconds');
-            reject(new Error('opencode timed out after 60 seconds'));
-        }, 60000);
-    });
-}
-
 async function processMessage(userId, message, history) {
     const prompt = buildPrompt(userId, message, history);
     const apiKey = process.env.MINIOC_API_KEY;
@@ -148,21 +70,6 @@ async function processMessage(userId, message, history) {
     }
 
     logger.info(`Processing message for user ${userId}`);
-
-    // Check if using opencode model
-    if (model.startsWith('opencode/')) {
-        logger.debug(`Using OpenCode mode`);
-        try {
-            const response = await callOpenCode(model, prompt);
-            logger.success(`AI response received for user ${userId}`);
-            return response;
-        } catch (error) {
-            logger.error(`OpenCode error: ${error.message}`);
-            throw error;
-        }
-    }
-
-    // Use MiniMax API directly
     logger.debug(`API - BASE_URL: ${baseURL}`);
     logger.debug(`API - MODEL: ${model}`);
 
@@ -176,4 +83,4 @@ async function processMessage(userId, message, history) {
     }
 }
 
-module.exports = { processMessage, buildPrompt };
+module.exports = { processMessage, buildPrompt, callMiniMaxAPI };

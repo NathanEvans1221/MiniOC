@@ -14,5 +14,10 @@
 - 重構 Telegram Polling 參數（timeout: 10s, request.timeout: 30s），徹底根除每 30 秒客戶端超時造成的 409 自我衝突，並移除 35 秒啟動等待。
 
 ### 變更 (Changed)
-- 預設推論模型更新為 `MiniMax-M3`。
-- 同步更新 `.env.example`、`docker-compose.yml` 與 `README.md` 中的模型設定。
+- 專案架構全面收斂為模式 A（MiniMax 官方 API 直連），預設推論模型為 `MiniMax-M3`。
+- 重寫 `README.md`，提供精確簡明的使用指引。
+- 精簡 `src/ai.js` 與 `.env.example`。
+
+### 移除 (Removed)
+- 移除 Docker 配置（Dockerfile、docker-compose.yml、.dockerignore 及相關測試文件）。
+- 移除 OpenCode CLI 子進程調用邏輯與冗餘前綴標籤。
